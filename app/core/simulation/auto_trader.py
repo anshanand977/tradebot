@@ -453,26 +453,36 @@ class AutoTrader:
                     "reason": "Target 2 hit. Stop loss moved to Target 1 to lock in profits."
                 })
 
-            # 3. Trend Reversal Check (EMA 20 crossing EMA 50 opposite)
+            # 3. Calculate current P&L percentage to prevent exiting on minor drawdowns
+            pnl_pct = 0.0
+            if pos.direction == "BUY":
+                pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
+            elif pos.direction == "SELL":
+                pnl_pct = (pos.entry_price - current_price) / pos.entry_price * 100
+
+            # 4. Trend Reversal Check (EMA 20 crossing EMA 50 opposite)
+            # Only trigger trend reversal or volatility exits if the position is in profit (to lock in gains).
+            # If the position is at a loss, let it run to the stop-loss to give it breathing room.
             ema_20 = indicators.get("ema_20", 0)
             ema_50 = indicators.get("ema_50", 0)
 
-            if pos.direction == "BUY" and ema_20 < ema_50 and ema_50 > 0:
-                logger.info("🛡️ Smart Exit: Trend reversal detected for {}. Closing position early.", pos.symbol)
-                virtual_portfolio.close_position(pos.order_id, current_price, "AI_EXIT_TREND_REVERSAL")
-                return
+            if pnl_pct >= 0:
+                if pos.direction == "BUY" and ema_20 < ema_50 and ema_50 > 0:
+                    logger.info("🛡️ Smart Exit: Trend reversal detected for {} in profit ({:.2f}%). Closing position early.", pos.symbol, pnl_pct)
+                    virtual_portfolio.close_position(pos.order_id, current_price, "AI_EXIT_TREND_REVERSAL")
+                    return
 
-            if pos.direction == "SELL" and ema_20 > ema_50 and ema_50 > 0:
-                logger.info("🛡️ Smart Exit: Trend reversal detected for {}. Closing position early.", pos.symbol)
-                virtual_portfolio.close_position(pos.order_id, current_price, "AI_EXIT_TREND_REVERSAL")
-                return
+                if pos.direction == "SELL" and ema_20 > ema_50 and ema_50 > 0:
+                    logger.info("🛡️ Smart Exit: Trend reversal detected for {} in profit ({:.2f}%). Closing position early.", pos.symbol, pnl_pct)
+                    virtual_portfolio.close_position(pos.order_id, current_price, "AI_EXIT_TREND_REVERSAL")
+                    return
 
-            # 4. Volatility Exit: Bollinger Bands breakdown
-            bb_lower = indicators.get("bb_lower", 0.0)
-            if pos.direction == "BUY" and current_price < bb_lower and bb_lower > 0:
-                logger.info("🛡️ Smart Exit: Volatility breakdown for {}. Closing position.", pos.symbol)
-                virtual_portfolio.close_position(pos.order_id, current_price, "AI_EXIT_VOLATILITY")
-                return
+                # 5. Volatility Exit: Bollinger Bands breakdown
+                bb_lower = indicators.get("bb_lower", 0.0)
+                if pos.direction == "BUY" and current_price < bb_lower and bb_lower > 0:
+                    logger.info("🛡️ Smart Exit: Volatility breakdown for {} in profit ({:.2f}%). Closing position.", pos.symbol, pnl_pct)
+                    virtual_portfolio.close_position(pos.order_id, current_price, "AI_EXIT_VOLATILITY")
+                    return
 
         except Exception as e:
             logger.debug("Error applying smart trade rules for {}: {}", pos.symbol, e)

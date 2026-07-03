@@ -1394,18 +1394,20 @@
 
       <div class="card" style="overflow:auto;">
         <div class="card-header">
-          <div class="card-title">Pending Zone Orders</div>
-          <span style="font-size:11px;color:var(--text-muted)">Waiting for price to enter optimal entry zone (pullback / support / breakout range)</span>
+          <div>
+            <div class="card-title" style="margin-bottom:0;">Pending Zone Orders</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-weight:500;">Waiting for price to enter optimal entry zone (pullback / support / breakout range)</div>
+          </div>
         </div>
         <div id="pending-zone-orders-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:10px;">
-          <div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">No pending zone orders</div>
+          <div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:13px;grid-column:1/-1;"><div style="font-size:32px;margin-bottom:10px;">⏳</div>No pending zone orders. Watching the market scanner for entries...</div>
         </div>
       </div>
 
       <div class="card" style="overflow:auto;">
         <div class="card-header">
-          <div class="card-title">Trade History</div>
-          <button class="btn" onclick="loadTrades()">Refresh</button>
+          <div class="card-title" style="margin-bottom:0;">Trade History</div>
+          <button class="btn" onclick="loadTrades()" style="padding:6px 12px;font-size:11px;">Refresh</button>
         </div>
         <div style="overflow-x:auto;">
           <table class="data-table">
@@ -1414,7 +1416,7 @@
               <th>Qty</th><th>P&L</th><th>P&L%</th><th>Strategy</th><th>Exit Reason</th><th>Duration</th>
             </tr></thead>
             <tbody id="trades-tbody">
-              <tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px;">No trades yet</td></tr>
+              <tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:40px 20px;"><div style="font-size:32px;margin-bottom:10px;">📖</div>No historical trades executed yet. Completed simulation trades will be recorded here.</td></tr>
             </tbody>
           </table>
         </div>

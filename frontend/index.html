@@ -2231,20 +2231,26 @@ function updatePortfolioUI(stats, positions, pendingOrders) {
 
   // Positions list
   const posHTML = positions.length === 0
-    ? '<div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;">No open positions</div>'
+    ? '<div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:13px;grid-column:1/-1;"><div style="font-size:32px;margin-bottom:10px;">💼</div>No open positions. Scanner signals will create positions here.</div>'
     : positions.map(p => `
-      <div class="position-row">
-        <div class="pos-top">
-          <span class="pos-sym">${p.symbol} <span style="font-size:11px;padding:2px 8px;border-radius:4px;${p.direction==='BUY'?'background:rgba(0,212,170,.15);color:var(--bull)':'background:rgba(255,73,118,.15);color:var(--bear)'}">${p.direction}</span></span>
-          <span class="pos-pnl ${p.unrealized_pnl>=0?'up':'down'}">${p.unrealized_pnl>=0?'+':''}₹${p.unrealized_pnl.toFixed(0)} (${p.unrealized_pnl_pct.toFixed(2)}%)</span>
+      <div class="position-row" style="border: 1px solid var(--border); border-top: 3px solid ${p.direction==='BUY'?'var(--bull)':'var(--bear)'}; margin-bottom: 12px; padding: 16px; border-radius: var(--radius-md); background: #ffffff; box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.02);">
+        <div class="pos-top" style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="pos-sym" style="font-weight:750; font-size:14px; color:var(--text-primary);">${p.symbol}
+            <span style="font-size:10px; padding:2px 8px; border-radius:4px; background:${p.direction==='BUY'?'rgba(13,148,136,0.08)':'rgba(225,29,72,0.08)'}; color:${p.direction==='BUY'?'var(--bull)':'var(--bear)'}; font-weight:700; margin-left:6px;">${p.direction}</span>
+          </span>
+          <span class="pos-pnl ${p.unrealized_pnl>=0?'up':'down'}" style="font-family:'JetBrains Mono',monospace; font-weight:750; font-size:13px; color:${p.unrealized_pnl>=0?'var(--bull)':'var(--bear)'};">
+            ${p.unrealized_pnl>=0?'+':''}₹${p.unrealized_pnl.toFixed(2)} (${p.unrealized_pnl_pct.toFixed(2)}%)
+          </span>
         </div>
-        <div class="pos-info">
-          <div>Entry <span>₹${p.entry_price.toFixed(2)}</span></div>
-          <div>LTP <span>₹${p.current_price.toFixed(2)}</span></div>
-          <div>SL <span style="color:var(--bear)">₹${p.stop_loss.toFixed(2)}</span></div>
-          <div>T1 <span style="color:var(--bull)">₹${p.target1.toFixed(2)}</span></div>
-          <div>Qty <span>${p.quantity}</span></div>
-          <button class="btn" style="padding:2px 10px;font-size:10px;" onclick="closePos('${p.order_id}',${p.current_price})">Close</button>
+        <div style="background:#fafbfc; border-radius:var(--radius-sm); padding:10px 12px; margin-top:12px; display:grid; grid-template-columns:repeat(5, 1fr); gap:8px; border:1px solid var(--border); text-align:center;">
+          <div><div style="font-size:9px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Entry</div><span style="font-family:'JetBrains Mono',monospace; color:var(--text-primary); font-weight:600; font-size:11px; display:block; margin-top:2px;">₹${p.entry_price.toFixed(2)}</span></div>
+          <div><div style="font-size:9px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">LTP</div><span style="font-family:'JetBrains Mono',monospace; color:var(--text-primary); font-weight:600; font-size:11px; display:block; margin-top:2px;">₹${p.current_price.toFixed(2)}</span></div>
+          <div><div style="font-size:9px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Stop Loss</div><span style="font-family:'JetBrains Mono',monospace; color:var(--bear); font-weight:600; font-size:11px; display:block; margin-top:2px;">₹${p.stop_loss.toFixed(2)}</span></div>
+          <div><div style="font-size:9px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Target 1</div><span style="font-family:'JetBrains Mono',monospace; color:var(--bull); font-weight:600; font-size:11px; display:block; margin-top:2px;">₹${p.target1.toFixed(2)}</span></div>
+          <div><div style="font-size:9px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Quantity</div><span style="font-family:'JetBrains Mono',monospace; color:var(--text-secondary); font-weight:600; font-size:11px; display:block; margin-top:2px;">${p.quantity}</span></div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+          <button class="btn" style="padding:6px 14px; font-size:11px; border-color:#cbd5e1; background:#ffffff; color:var(--text-primary); font-weight:600;" onclick="closePos('${p.order_id}',${p.current_price})">Close Position</button>
         </div>
       </div>`).join('');
   document.getElementById('positions-list').innerHTML = posHTML;
@@ -2254,23 +2260,29 @@ function updatePortfolioUI(stats, positions, pendingOrders) {
   if (pendingList) {
     const ordersArr = pendingOrders ? Object.values(pendingOrders) : [];
     if (ordersArr.length === 0) {
-      pendingList.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px;grid-column:1/-1;">No pending zone orders</div>';
+      pendingList.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:13px;grid-column:1/-1;"><div style="font-size:32px;margin-bottom:10px;">⏳</div>No pending zone orders. Watching the market scanner for entries...</div>';
     } else {
       pendingList.innerHTML = ordersArr.map(p => {
         const isBuy = p.direction === 'BUY';
         return `
-          <div class="position-row" style="border-left:3px solid ${isBuy?'var(--bull)':'var(--bear)'}; margin:0;">
-            <div class="pos-top">
-              <span class="pos-sym">${p.symbol} <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(79,142,247,.15);color:var(--accent-blue);font-weight:700;">PENDING ${p.direction}</span></span>
-              <span class="pos-pnl" style="color:var(--text-secondary);font-size:11px;font-weight:600;">Expires in ${p.minutes_remaining}m</span>
+          <div class="position-row" style="border: 1px solid var(--border); border-top: 3px solid ${isBuy?'var(--bull)':'var(--bear)'}; margin: 0; padding: 16px; border-radius: var(--radius-md); background: #ffffff; box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.02);">
+            <div class="pos-top" style="display:flex; justify-content:space-between; align-items:center;">
+              <span class="pos-sym" style="font-weight:750; font-size:14px; color:var(--text-primary);">${p.symbol}
+                <span style="font-size:10px; padding:2px 8px; border-radius:4px; background:${isBuy?'rgba(13,148,136,0.08)':'rgba(225,29,72,0.08)'}; color:${isBuy?'var(--bull)':'var(--bear)'}; font-weight:700; margin-left:6px;">ZONE ${p.direction}</span>
+              </span>
+              <span style="color:var(--text-muted); font-size:11px; font-weight:600; display:flex; align-items:center; gap:4px;">
+                ⏳ ${Math.floor(p.minutes_remaining/60)}h ${p.minutes_remaining%60}m
+              </span>
             </div>
-            <div class="pos-info" style="grid-template-columns:1fr 1fr; gap:6px 12px; margin-top:8px;">
-              <div>Buy/Sell Zone <span style="color:var(--accent-orange);font-weight:700;">₹${p.entry_zone_low}–₹${p.entry_zone_high}</span></div>
-              <div>Alert Price <span>₹${p.alert_price}</span></div>
-              <div>Stop Loss <span style="color:var(--bear)">₹${p.stop_loss}</span></div>
-              <div>Target 1 <span style="color:var(--bull)">₹${p.target1}</span></div>
-              <div>R:R <strong>1:${p.risk_reward}</strong></div>
-              <div>Strategy <span style="font-size:10px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;">${p.strategy}</span></div>
+            <div style="background:#fafbfc; border-radius:var(--radius-sm); padding:10px 12px; margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; border:1px solid var(--border);">
+              <div style="font-size:11px; color:var(--text-secondary);">Target Zone: <span style="display:block; font-family:'JetBrains Mono',monospace; color:var(--accent-orange); font-weight:750; font-size:12px; margin-top:2px;">₹${p.entry_zone_low.toFixed(2)} - ₹${p.entry_zone_high.toFixed(2)}</span></div>
+              <div style="font-size:11px; color:var(--text-secondary);">Alert Price: <span style="display:block; font-family:'JetBrains Mono',monospace; color:var(--text-primary); font-weight:600; font-size:12px; margin-top:2px;">₹${p.alert_price.toFixed(2)}</span></div>
+              <div style="font-size:11px; color:var(--text-secondary);">Stop Loss: <span style="display:block; font-family:'JetBrains Mono',monospace; color:var(--bear); font-weight:600; font-size:12px; margin-top:2px;">₹${p.stop_loss.toFixed(2)}</span></div>
+              <div style="font-size:11px; color:var(--text-secondary);">Target 1: <span style="display:block; font-family:'JetBrains Mono',monospace; color:var(--bull); font-weight:600; font-size:12px; margin-top:2px;">₹${p.target1.toFixed(2)}</span></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; font-size:11px; color:var(--text-muted);">
+              <span>Strategy: <strong style="color:var(--text-secondary);">${p.strategy}</strong></span>
+              <span style="background:rgba(59,130,246,0.08); color:var(--accent-blue); padding:2px 6px; border-radius:4px; font-weight:700;">R:R 1:${p.risk_reward}</span>
             </div>
           </div>
         `;
@@ -2298,22 +2310,42 @@ async function loadTrades() {
     const data = await res.json();
     const tbody = document.getElementById('trades-tbody');
     if (!data.trades.length) {
-      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px;">No trades yet</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:40px 20px;"><div style="font-size:32px;margin-bottom:10px;">📖</div>No historical trades executed yet. Completed simulation trades will be recorded here.</td></tr>';
       return;
     }
-    tbody.innerHTML = data.trades.map(t => `
-      <tr>
-        <td class="sym">${t.symbol || t.ticker}</td>
-        <td><span style="${t.direction==='BUY'?'color:var(--bull)':'color:var(--bear)'}">${t.direction}</span></td>
-        <td>₹${(t.entry_price||0).toFixed(2)}</td>
-        <td>${t.exit_price ? '₹'+t.exit_price.toFixed(2) : '—'}</td>
-        <td>${(t.quantity||0).toFixed(0)}</td>
-        <td class="${(t.net_pnl||0)>=0?'pos':'neg'}">${t.net_pnl!=null?(t.net_pnl>=0?'+':'')+' ₹'+t.net_pnl.toFixed(2):'Open'}</td>
-        <td class="${(t.pnl_pct||0)>=0?'pos':'neg'}">${t.pnl_pct!=null?(t.pnl_pct>=0?'+':'')+t.pnl_pct.toFixed(2)+'%':'—'}</td>
-        <td style="color:var(--text-secondary);font-family:'Inter',sans-serif;font-size:11px;">${t.strategy||'—'}</td>
-        <td style="color:var(--text-muted);font-size:11px;">${t.exit_reason||'Open'}</td>
-        <td>${t.holding_minutes ? Math.round(t.holding_minutes/60)+'h' : '—'}</td>
-      </tr>`).join('');
+    
+    const formatExitReason = (reason) => {
+      if (!reason || reason === 'Open') {
+        return `<span style="background:#eff6ff;color:#2563eb;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;border:1px solid rgba(59,130,246,0.12)">Open</span>`;
+      }
+      const r = reason.toUpperCase();
+      if (r.includes('TARGET') || r.includes('TP')) {
+        return `<span style="background:#eef2f6;color:var(--bull);padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;border:1px solid rgba(13,148,136,0.15)">${reason}</span>`;
+      }
+      if (r.includes('SL') || r.includes('STOP')) {
+        return `<span style="background:#fff1f2;color:var(--bear);padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;border:1px solid rgba(225,29,72,0.15)">${reason}</span>`;
+      }
+      return `<span style="background:#f1f5f9;color:var(--text-secondary);padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;">${reason}</span>`;
+    };
+
+    tbody.innerHTML = data.trades.map(t => {
+      const isBuy = t.direction === 'BUY';
+      const netPnl = t.net_pnl != null ? t.net_pnl : 0.0;
+      const isWin = netPnl >= 0;
+      return `
+        <tr>
+          <td class="sym">${t.symbol || t.ticker}</td>
+          <td><span style="font-size:10px;padding:2px 8px;border-radius:4px;background:${isBuy?'rgba(13,148,136,0.08)':'rgba(225,29,72,0.08)'};color:${isBuy?'var(--bull)':'var(--bear)'};font-weight:700;">${t.direction}</span></td>
+          <td>₹${(t.entry_price||0).toFixed(2)}</td>
+          <td>${t.exit_price ? '₹'+t.exit_price.toFixed(2) : '—'}</td>
+          <td>${(t.quantity||0).toFixed(0)}</td>
+          <td class="${isWin?'pos':'neg'}" style="font-weight:700;">${t.net_pnl!=null?(isWin?'+':'')+' ₹'+netPnl.toFixed(2):'Open'}</td>
+          <td class="${(t.pnl_pct||0)>=0?'pos':'neg'}" style="font-weight:700;">${t.pnl_pct!=null?(t.pnl_pct>=0?'+':'')+t.pnl_pct.toFixed(2)+'%':'—'}</td>
+          <td style="color:var(--text-secondary);font-family:'Inter',sans-serif;font-size:11px;">${t.strategy||'—'}</td>
+          <td>${formatExitReason(t.exit_reason)}</td>
+          <td>${t.holding_minutes ? Math.round(t.holding_minutes/60)+'h' : '—'}</td>
+        </tr>`;
+    }).join('');
   } catch(e) {}
 }
 

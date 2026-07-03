@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Literal, Dict, Any, Tuple
 import pandas as pd
 from loguru import logger
+from app.config import settings
 
 
 @dataclass
@@ -51,12 +52,12 @@ class StrategySignal:
         A signal is actionable only when:
         1. Direction is BUY or SELL
         2. Confidence >= 55% (strategy-level threshold)
-        3. R:R >= 2.0 (industry standard minimum — no trade below 1:2)
+        3. R:R >= MIN_RISK_REWARD
         """
         return (
             self.direction in ("BUY", "SELL") and
             self.confidence >= 0.55 and
-            self.risk_reward >= 2.0
+            self.risk_reward >= settings.MIN_RISK_REWARD
         )
 
     @property

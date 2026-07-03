@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     SCANNER_UNIVERSE_SIZE: int = 500       # NSE 500
     MIN_STRATEGY_AGREEMENT: int = 4        # Min strategies must agree for signal
     MIN_CONFIDENCE_THRESHOLD: float = 0.72 # Minimum 72% confidence
-    MIN_RISK_REWARD: float = 2.0           # Industry standard: minimum 1:2 R:R before trade is actionable
+    MIN_RISK_REWARD: float = 3.0           # Industry standard: minimum 1:3 R:R before trade is actionable
     ENTRY_ZONE_BUFFER_PCT: float = 0.8     # ±0.8% zone around optimal entry price for pending zone orders
     ZONE_ORDER_EXPIRY_HOURS: float = 6.0   # Pending zone orders expire after this many hours
 

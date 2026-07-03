@@ -3,6 +3,8 @@ __pycache__/
 build/
 dist/
 *.db
+*.db-shm
+*.db-wal
 *.log
 *.spec
 .idea/

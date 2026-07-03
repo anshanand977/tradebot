@@ -76,8 +76,11 @@ class Settings(BaseSettings):
     # Scanner
     SCANNER_INTERVAL_SECONDS: int = 60
     SCANNER_UNIVERSE_SIZE: int = 500       # NSE 500
-    MIN_STRATEGY_AGREEMENT: int = 3        # Min strategies must agree for signal
-    MIN_CONFIDENCE_THRESHOLD: float = 0.70 # Minimum 70% confidence
+    MIN_STRATEGY_AGREEMENT: int = 4        # Min strategies must agree for signal
+    MIN_CONFIDENCE_THRESHOLD: float = 0.72 # Minimum 72% confidence
+    MIN_RISK_REWARD: float = 2.0           # Industry standard: minimum 1:2 R:R before trade is actionable
+    ENTRY_ZONE_BUFFER_PCT: float = 0.8     # ±0.8% zone around optimal entry price for pending zone orders
+    ZONE_ORDER_EXPIRY_HOURS: float = 6.0   # Pending zone orders expire after this many hours
 
     # Data
     DATA_PROVIDER: str = "yfinance"        # Primary data source
@@ -166,7 +169,7 @@ SIGNAL_COLORS = {
 
 # ─── Risk Levels ──────────────────────────────────────────────────────────────
 RISK_LEVELS = {
-    "LOW":    (0.0, 1.5),   # R:R ratio range
-    "MEDIUM": (1.5, 2.5),
-    "HIGH":   (2.5, 99.0),
+    "LOW":    (0.0, 2.0),   # Below industry standard
+    "MEDIUM": (2.0, 3.0),   # Industry standard (1:2 to 1:3)
+    "HIGH":   (3.0, 99.0),  # Above standard (reward dominant)
 }

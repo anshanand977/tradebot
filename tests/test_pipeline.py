@@ -196,16 +196,21 @@ class TestRiskManagement(unittest.TestCase):
         self.risk = RiskManager()
 
     def test_circuit_breaker(self):
-        # Trigger daily loss limit
+        # Daily losses no longer auto-trigger the circuit breaker
         self.risk.update_daily_pnl(-15000.0)
-        self.assertTrue(self.risk.is_circuit_broken)
+        self.assertFalse(self.risk.is_circuit_broken)  # Must NOT be triggered automatically
 
+        # Trading is still allowed after big losses
         res = self.risk.check_trade(
             ticker="INFY.NS", entry_price=1400.0, stop_loss=1380.0,
             portfolio_balance=100000.0, open_positions=0
         )
-        self.assertFalse(res.allowed)
-        self.assertIn("Circuit breaker", res.reason)
+        self.assertTrue(res.allowed)
+
+        # Manual activation still works via reset_circuit_breaker (set False)
+        # and the Settings button can force it True if needed in future
+        self.risk.reset_circuit_breaker()
+        self.assertFalse(self.risk.is_circuit_broken)
 
     def test_position_sizing(self):
         res = self.risk.check_trade(

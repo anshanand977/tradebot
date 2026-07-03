@@ -1,8 +1,8 @@
 """
 Risk Management Engine
 ========================
-Enforces all risk rules before any simulated trade is placed.
-Circuit breaker stops all trading when daily loss or drawdown limits are hit.
+Enforces position sizing and concurrency rules before any simulated trade is placed.
+No automatic daily loss circuit breaker — trading is never halted by P&L.
 """
 
 from dataclasses import dataclass
@@ -26,12 +26,13 @@ class RiskManager:
     """
     Central risk gatekeeper.
     All simulated orders pass through this before execution.
+    Daily loss limit has been removed — trading is never auto-halted.
     """
 
     def __init__(self):
         self._daily_pnl: float = 0.0
         self._daily_trades: int = 0
-        self._circuit_broken: bool = False
+        self._circuit_broken: bool = False   # Manual override only
         self._last_reset: date = date.today()
 
     def check_trade(
@@ -44,31 +45,27 @@ class RiskManager:
         sector_exposure: float = 0.0,
     ) -> RiskCheckResult:
         """
-        Validates a proposed trade against all risk rules.
-        Returns RiskCheckResult with allowed=True/False and reason.
+        Validates a proposed trade against position sizing rules.
+        No daily loss limit — circuit breaker is manual-only.
         """
         self._reset_if_new_day()
 
-        # 1. Circuit breaker
+        # 1. Manual circuit breaker (never triggered automatically)
         if self._circuit_broken:
-            return RiskCheckResult(False, "Circuit breaker ACTIVE — daily loss limit reached")
+            return RiskCheckResult(False, "Circuit breaker ACTIVE — reset manually via Settings to resume trading")
 
-        # 2. Max daily trades
-        if self._daily_trades >= settings.MAX_CONCURRENT_POSITIONS * 3:
-            return RiskCheckResult(False, f"Max daily trades reached ({self._daily_trades})")
-
-        # 3. Max concurrent positions
+        # 2. Max concurrent positions
         if open_positions >= settings.MAX_CONCURRENT_POSITIONS:
             return RiskCheckResult(
                 False,
                 f"Max concurrent positions ({settings.MAX_CONCURRENT_POSITIONS}) reached"
             )
 
-        # 4. Sector exposure
+        # 3. Sector exposure
         if sector_exposure > settings.MAX_SECTOR_EXPOSURE_PCT / 100 * portfolio_balance:
-            return RiskCheckResult(False, f"Sector exposure limit exceeded")
+            return RiskCheckResult(False, "Sector exposure limit exceeded")
 
-        # 5. Position size calculation
+        # 4. Position size calculation
         risk_per_trade = settings.DEFAULT_RISK_PER_TRADE_PCT / 100 * portfolio_balance
         risk_per_share = abs(entry_price - stop_loss)
 
@@ -99,26 +96,24 @@ class RiskManager:
         )
 
     def update_daily_pnl(self, pnl: float) -> None:
-        """Called after each trade closes."""
+        """Called after each trade closes. Tracks P&L for informational display only."""
         self._reset_if_new_day()
         self._daily_pnl += pnl
         self._daily_trades += 1
-
-        # Check circuit breaker
-        max_loss = settings.MAX_DAILY_LOSS_PCT / 100
-        if abs(self._daily_pnl) > max_loss * abs(self._daily_pnl + sum([])):
-            # Simplified: if daily loss is significant, trip breaker
-            pass
-
-        # Absolute check
-        daily_loss_limit = settings.MAX_DAILY_LOSS_PCT  # Will be checked against portfolio pct
-        if pnl < 0 and abs(self._daily_pnl) > daily_loss_limit:
-            self._circuit_broken = True
-            logger.warning("⚠️  CIRCUIT BREAKER TRIGGERED — daily loss limit reached")
+        # Daily loss limit removed — no circuit breaker auto-trigger
 
     def reset_circuit_breaker(self) -> None:
+        """Manually clear the circuit breaker if it was set via Settings."""
         self._circuit_broken = False
         logger.info("Circuit breaker reset manually")
+
+    def reset_daily_counters(self) -> None:
+        """Resets daily P&L counters and clears manual circuit breaker."""
+        self._daily_pnl = 0.0
+        self._daily_trades = 0
+        self._circuit_broken = False
+        self._last_reset = date.today()
+        logger.info("Daily risk counters reset manually")
 
     @property
     def is_circuit_broken(self) -> bool:
@@ -137,7 +132,7 @@ class RiskManager:
         if today != self._last_reset:
             self._daily_pnl = 0.0
             self._daily_trades = 0
-            self._circuit_broken = False
+            # Note: Do not reset manual circuit breaker on new day
             self._last_reset = today
             logger.info("Daily risk counters reset for {}", today)
 
@@ -146,7 +141,6 @@ class RiskManager:
             "circuit_broken": self._circuit_broken,
             "daily_pnl": round(self._daily_pnl, 2),
             "daily_trades": self._daily_trades,
-            "max_daily_loss_pct": settings.MAX_DAILY_LOSS_PCT,
             "max_concurrent_positions": settings.MAX_CONCURRENT_POSITIONS,
             "max_position_size_pct": settings.MAX_POSITION_SIZE_PCT,
         }

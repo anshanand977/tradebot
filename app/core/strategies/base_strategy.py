@@ -4,11 +4,19 @@ Base Strategy Abstract Class
 All strategies must inherit from BaseStrategy and implement analyze().
 The framework provides a standardized StrategySignal output that the
 VotingEngine uses to aggregate decisions.
+
+Industry-Standard Defaults
+---------------------------
+- Stop loss: 2×ATR from entry (enough room for normal candle variance)
+- Target 1: 2R (minimum 1:2 R:R — industry standard minimum)
+- Target 2: 3R
+- Target 3: 5R
+- Entry Zone: ±0.8% band around optimal entry for pending zone orders
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional, Literal, Dict, Any
+from typing import List, Optional, Literal, Dict, Any, Tuple
 import pandas as pd
 from loguru import logger
 
@@ -32,9 +40,24 @@ class StrategySignal:
     ticker: str = ""
     pattern_context: str = ""          # Any pattern that triggered the signal
 
+    # Entry zone: defines a price band where the trade should be entered.
+    # The auto-trader will only execute when live price falls inside this zone.
+    entry_zone_low: float = 0.0        # Lower bound of the optimal entry zone
+    entry_zone_high: float = 0.0       # Upper bound of the optimal entry zone
+
     @property
     def is_actionable(self) -> bool:
-        return self.direction in ("BUY", "SELL") and self.confidence >= 0.55
+        """
+        A signal is actionable only when:
+        1. Direction is BUY or SELL
+        2. Confidence >= 55% (strategy-level threshold)
+        3. R:R >= 2.0 (industry standard minimum — no trade below 1:2)
+        """
+        return (
+            self.direction in ("BUY", "SELL") and
+            self.confidence >= 0.55 and
+            self.risk_reward >= 2.0
+        )
 
     @property
     def risk_amount(self) -> float:
@@ -43,6 +66,20 @@ class StrategySignal:
     @property
     def reward_amount(self) -> float:
         return abs(self.targets[0] - self.entry_price) if self.targets else 0.0
+
+    def has_valid_entry_zone(self) -> bool:
+        """Returns True if the entry zone is defined and non-trivial."""
+        return (
+            self.entry_zone_low > 0 and
+            self.entry_zone_high > 0 and
+            self.entry_zone_low < self.entry_zone_high
+        )
+
+    def price_in_entry_zone(self, price: float) -> bool:
+        """Returns True if the given price falls within the entry zone."""
+        if not self.has_valid_entry_zone():
+            return False
+        return self.entry_zone_low <= price <= self.entry_zone_high
 
 
 class BaseStrategy(ABC):
@@ -130,18 +167,29 @@ class BaseStrategy(ABC):
         return round(reward / risk, 2) if risk > 0 else 0.0
 
     def _atr_stop(self, indicators: Dict, entry: float, direction: str,
-                  multiplier: float = 1.5) -> float:
-        """ATR-based stop loss."""
-        atr = indicators.get("atr_14", entry * 0.01)
+                  multiplier: float = 2.0) -> float:
+        """
+        ATR-based stop loss.
+        Default multiplier is 2.0 (industry standard for daily timeframes).
+        This gives the trade enough room to breathe through normal candle variance
+        without being stopped out on legitimate pullbacks.
+        """
+        atr = indicators.get("atr_14", entry * 0.015)  # Fallback: 1.5% of price
         if direction == "BUY":
             return round(entry - multiplier * atr, 2)
         return round(entry + multiplier * atr, 2)
 
     def _atr_targets(self, indicators: Dict, entry: float, stop: float,
                      direction: str, ratios: List[float] = None) -> List[float]:
-        """Generate targets based on R:R ratios."""
+        """
+        Generate targets based on R:R ratios from entry.
+        Default ratios: [2.0, 3.0, 5.0]
+          T1 = 2R (industry minimum 1:2)
+          T2 = 3R (ideal risk:reward)
+          T3 = 5R (swing target)
+        """
         if ratios is None:
-            ratios = [1.5, 2.5, 4.0]
+            ratios = [2.0, 3.0, 5.0]
         risk = abs(entry - stop)
         targets = []
         for r in ratios:
@@ -150,3 +198,63 @@ class BaseStrategy(ABC):
             else:
                 targets.append(round(entry - risk * r, 2))
         return targets
+
+    def _calculate_entry_zone(
+        self,
+        entry: float,
+        direction: str,
+        indicators: Dict,
+        zone_type: str = "PULLBACK",
+    ) -> Tuple[float, float]:
+        """
+        Calculate the optimal entry zone (low, high) for a pending zone order.
+
+        Zone types:
+          PULLBACK    — Wait for a slight dip/rally to a better price
+          BREAKOUT    — Enter just above/below the breakout level (tight zone)
+          REVERSAL    — Enter at the extreme (already near a low/high)
+          SUPPORT     — Buy zone is near the support level
+          RESISTANCE  — Sell zone is near the resistance level
+
+        Returns: (zone_low, zone_high)
+        """
+        from app.config import settings
+        buf = settings.ENTRY_ZONE_BUFFER_PCT / 100  # e.g., 0.008
+
+        atr = indicators.get("atr_14", entry * 0.015)
+        ema20 = indicators.get("ema_20", entry)
+        vwap = indicators.get("vwap", entry)
+
+        if direction == "BUY":
+            if zone_type == "PULLBACK":
+                # For trend/pullback: buy zone is between EMA20 and 0.5% above current
+                optimal_entry = max(ema20, entry * 0.995)  # Near EMA or slight dip
+                zone_low  = round(optimal_entry * (1 - buf), 2)
+                zone_high = round(entry * (1 + buf * 0.5), 2)  # Slight upside for momentum
+            elif zone_type == "BREAKOUT":
+                # For breakouts: enter very close to the breakout level
+                zone_low  = round(entry * (1 - buf * 0.3), 2)  # Very tight below
+                zone_high = round(entry * (1 + buf), 2)
+            elif zone_type == "REVERSAL":
+                # For reversals: already at extreme, buy immediately in tight zone
+                zone_low  = round(entry * (1 - buf), 2)
+                zone_high = round(entry * (1 + buf), 2)
+            else:
+                zone_low  = round(entry * (1 - buf), 2)
+                zone_high = round(entry * (1 + buf), 2)
+        else:  # SELL
+            if zone_type == "PULLBACK":
+                optimal_entry = min(ema20, entry * 1.005)
+                zone_low  = round(entry * (1 - buf * 0.5), 2)
+                zone_high = round(optimal_entry * (1 + buf), 2)
+            elif zone_type == "BREAKOUT":
+                zone_low  = round(entry * (1 - buf), 2)
+                zone_high = round(entry * (1 + buf * 0.3), 2)
+            elif zone_type == "REVERSAL":
+                zone_low  = round(entry * (1 - buf), 2)
+                zone_high = round(entry * (1 + buf), 2)
+            else:
+                zone_low  = round(entry * (1 - buf), 2)
+                zone_high = round(entry * (1 + buf), 2)
+
+        return zone_low, zone_high

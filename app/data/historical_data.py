@@ -188,6 +188,43 @@ class HistoricalDataManager:
             )
             return row[0] if row else None
 
+    # Short TTL cache: {ticker: (timestamp, price)}
+    _live_price_cache: Dict[str, Tuple[float, float]] = {}
+
+    def get_live_price(self, ticker: str) -> Optional[float]:
+        """
+        Fetches the CURRENT live market price from yfinance.
+        Uses a 10-second TTL cache to avoid hammering the API.
+        Falls back to the most recent DB candle close if the network call fails.
+        This is the price used for order execution — NOT the stale alert price.
+        """
+        import time as _time
+        now = _time.time()
+        cached = self._live_price_cache.get(ticker)
+        if cached and (now - cached[0]) < 10:
+            return cached[1]
+
+        try:
+            ticker_obj = yf.Ticker(ticker)
+            fast_info = ticker_obj.fast_info
+            # fast_info.last_price is the most recent trade price
+            price = getattr(fast_info, "last_price", None)
+            if price is None:
+                price = getattr(fast_info, "previous_close", None)
+            if price and float(price) > 0:
+                price = float(price)
+                self._live_price_cache[ticker] = (now, price)
+                logger.debug("Live price for {}: ₹{:.2f}", ticker, price)
+                return price
+        except Exception as e:
+            logger.debug("Live price fetch failed for {}: {}", ticker, e)
+
+        # Fallback: use most recent candle from DB
+        fallback = self.get_latest_price(ticker)
+        if fallback:
+            logger.debug("Fallback to DB price for {}: ₹{:.2f}", ticker, fallback)
+        return fallback
+
     # ─── Private Methods ──────────────────────────────────────────────────────
     def _load_from_db(self, ticker: str, timeframe: str, periods: int) -> pd.DataFrame:
         """Load candle data from SQLite (optimized projection query)."""

@@ -58,6 +58,11 @@ class TradeRecommendation:
     market_regime: str = ""
     smc_bias: str = ""
 
+    # Entry Zone: the optimal price range the auto-trader will WAIT for before executing.
+    # Trades are placed as pending zone orders and only fill when price enters this band.
+    entry_zone_low: float = 0.0   # Lower bound of buy/sell zone
+    entry_zone_high: float = 0.0  # Upper bound of buy/sell zone
+
     # Metadata
     indicator_snapshot: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.utcnow)
@@ -185,6 +190,8 @@ class VotingEngine:
         sell_weight = 0.0
         buy_count = 0
         sell_count = 0
+        buy_weight_sum = 0.0
+        sell_weight_sum = 0.0
         all_signals: List[str] = []
         pattern_context = ""
 
@@ -195,12 +202,14 @@ class VotingEngine:
             if signal.direction == "BUY" and signal.is_actionable:
                 buy_weight  += signal.confidence * w
                 buy_count   += 1
+                buy_weight_sum += w
                 all_signals.extend(signal.contributing_signals)
                 if signal.pattern_context:
                     pattern_context = signal.pattern_context
             elif signal.direction == "SELL" and signal.is_actionable:
                 sell_weight += signal.confidence * w
                 sell_count  += 1
+                sell_weight_sum += w
                 all_signals.extend(signal.contributing_signals)
 
         # Determine direction
@@ -209,10 +218,12 @@ class VotingEngine:
             direction = "BUY"
             agreed    = buy_count
             total_w   = buy_weight
+            weight_sum = buy_weight_sum
         elif sell_count >= min_agreement and sell_weight >= buy_weight * 1.2:
             direction = "SELL"
             agreed    = sell_count
             total_w   = sell_weight
+            weight_sum = sell_weight_sum
         else:
             # NO_TRADE — no consensus
             return self._no_trade_recommendation(
@@ -220,8 +231,7 @@ class VotingEngine:
             )
 
         # Calculate weighted confidence
-        num_voted = buy_count if direction == "BUY" else sell_count
-        weighted_conf = total_w / (num_voted * 2.0)  # Normalize to [0,1] range
+        weighted_conf = total_w / weight_sum if weight_sum > 0 else 0.0
         confidence = round(min(0.97, max(0.50, weighted_conf)), 3)
 
         # Gather entry/stop/targets from the highest-confidence agreeing signal
@@ -248,13 +258,25 @@ class VotingEngine:
         reward = abs(t1 - close)
         rr = round(reward / risk, 2) if risk > 0 else 0.0
 
-        # Risk level
-        if rr < 1.5:
-            risk_level = "LOW"
+        # ── Minimum R:R Gate — industry standard 1:2 minimum ──────────────────
+        # No trade should ever be recommended with R:R below 2.0.
+        # This is the single most important filter for long-term profitability.
+        if rr < settings.MIN_RISK_REWARD:
+            logger.info("{} {} | R:R {:.2f} below minimum {:.1f} — NO TRADE",
+                        direction, ticker, rr, settings.MIN_RISK_REWARD)
+            return self._no_trade_recommendation(
+                ticker, symbol, exchange, timeframe, votes,
+                [f"R:R {rr:.2f} below minimum 1:{settings.MIN_RISK_REWARD:.0f} required"],
+                close, indicators
+            )
+
+        # Risk level classification (aligned with industry standards)
+        if rr < 2.0:
+            risk_level = "LOW"      # Below standard — should never reach here after gate above
         elif rr < 3.0:
-            risk_level = "MEDIUM"
+            risk_level = "MEDIUM"   # Standard 1:2 to 1:3
         else:
-            risk_level = "HIGH"
+            risk_level = "HIGH"     # Reward-dominant (good, despite the "HIGH" name)
 
         # Build vote details dict
         vote_details = {
@@ -265,6 +287,28 @@ class VotingEngine:
             }
             for name, sig in votes.items()
         }
+
+        # ── Aggregate entry zone from agreeing signals ─────────────────────
+        # Use the average zone bounds from all agreeing signals that have zones
+        zone_signals = [
+            sig for _, sig in agreeing
+            if sig.entry_zone_low > 0 and sig.entry_zone_high > 0
+        ]
+        if zone_signals:
+            agg_zone_low  = round(sum(s.entry_zone_low  for s in zone_signals) / len(zone_signals), 2)
+            agg_zone_high = round(sum(s.entry_zone_high for s in zone_signals) / len(zone_signals), 2)
+        elif best_signal.entry_zone_low > 0:
+            agg_zone_low  = best_signal.entry_zone_low
+            agg_zone_high = best_signal.entry_zone_high
+        else:
+            # Fallback: compute zone from entry using config buffer
+            buf = settings.ENTRY_ZONE_BUFFER_PCT / 100
+            if direction == "BUY":
+                agg_zone_low  = round(close * (1 - buf), 2)
+                agg_zone_high = round(close * (1 + buf * 0.5), 2)
+            else:
+                agg_zone_low  = round(close * (1 - buf * 0.5), 2)
+                agg_zone_high = round(close * (1 + buf), 2)
 
         rec = TradeRecommendation(
             ticker=ticker,
@@ -289,6 +333,8 @@ class VotingEngine:
             pattern_context=pattern_context,
             market_regime=market_regime,
             indicator_snapshot=indicators,
+            entry_zone_low=agg_zone_low,
+            entry_zone_high=agg_zone_high,
             is_actionable=confidence >= settings.MIN_CONFIDENCE_THRESHOLD,
         )
 
@@ -416,6 +462,25 @@ class ProbabilityEngine:
         rr_score = min(1.0, rec.risk_reward / 4.0)
         factors.append(rr_score)
         weights.append(1.0)
+
+        # Factor 7: Candlestick pattern win rate learning integration
+        pattern_name = rec.pattern_context
+        if pattern_name:
+            try:
+                from app.db.models import PatternPerformance
+                with db_session() as db:
+                    perf = db.query(PatternPerformance).filter_by(
+                        pattern_name=pattern_name,
+                        pattern_type="CANDLESTICK"
+                    ).first()
+                    # Apply weight only if we have at least 3 trades history for this pattern
+                    if perf and perf.total_trades >= 3:
+                        factors.append(perf.win_rate)
+                        weights.append(2.0)
+                        logger.debug("Self-Learning: Candlestick pattern '{}' win rate of {:.1f}% factored into probability",
+                                     pattern_name, perf.win_rate * 100)
+            except Exception as e:
+                logger.debug("Failed to apply pattern learning stats: {}", e)
 
         # Weighted average
         total_weight = sum(weights)

@@ -35,6 +35,7 @@ class SimulatedOrder:
     timeframe: str = "1d"
     exchange: str = "NSE"
     ai_reason: str = ""
+    indicator_snapshot: Optional[Dict] = None
 
 
 @dataclass
@@ -59,6 +60,7 @@ class OpenPosition:
     unrealized_pnl: float = 0.0
     target1_hit: bool = False
     target2_hit: bool = False
+    indicator_snapshot: Optional[Dict] = None
 
     @property
     def unrealized_pnl_pct(self) -> float:
@@ -99,6 +101,12 @@ class VirtualPortfolio:
         Places a simulated order.
         Validates through risk manager first.
         """
+        # Double check if already in a position for this ticker
+        existing = [p for p in self.open_positions.values() if p.ticker == order.ticker]
+        if existing:
+            logger.info("Order rejected: Already in a position for {}", order.ticker)
+            return {"status": "REJECTED", "reason": f"Already in a position for {order.ticker}"}
+
         # Risk check
         sector_exposure = self._get_sector_exposure(order.ticker)
         risk_check = risk_manager.check_trade(
@@ -146,19 +154,26 @@ class VirtualPortfolio:
             timeframe=order.timeframe,
             exchange=order.exchange,
             ai_reason=order.ai_reason,
+            indicator_snapshot=order.indicator_snapshot,
         )
 
         self.open_positions[order.order_id] = position
 
         # Save to DB
-        self._save_trade_open(position, fill_price, quantity, order)
+        trade_id = self._save_trade_open(position, fill_price, quantity, order)
+        if trade_id:
+            # Swap order_id in position and open_positions to match DB primary key id
+            old_id = order.order_id
+            position.order_id = str(trade_id)
+            self.open_positions.pop(old_id, None)
+            self.open_positions[position.order_id] = position
 
         logger.info("📈 ORDER FILLED: {} {} {} @ ₹{:.2f} | Qty: {:.0f} | Balance: ₹{:.0f}",
                     order.direction, order.symbol, order.ticker, fill_price, quantity, self.balance)
 
         return {
             "status": "FILLED",
-            "order_id": order.order_id,
+            "order_id": position.order_id,
             "fill_price": round(fill_price, 2),
             "quantity": round(quantity, 2),
             "cost": round(cost, 2),
@@ -209,9 +224,17 @@ class VirtualPortfolio:
                 pos.target1_hit = True
                 closed = self._partial_exit(pos, current, 0.5, "TARGET1")
                 closed_trades.append(closed)
+            elif pos.direction == "SELL" and current <= pos.target1 and not pos.target1_hit:
+                pos.target1_hit = True
+                closed = self._partial_exit(pos, current, 0.5, "TARGET1")
+                closed_trades.append(closed)
 
             # Target 2 (partial: remaining 50%)
             elif pos.direction == "BUY" and current >= pos.target2 and pos.target1_hit and not pos.target2_hit:
+                pos.target2_hit = True
+                closed = self._partial_exit(pos, current, 0.5, "TARGET2")
+                closed_trades.append(closed)
+            elif pos.direction == "SELL" and current <= pos.target2 and pos.target1_hit and not pos.target2_hit:
                 pos.target2_hit = True
                 closed = self._partial_exit(pos, current, 0.5, "TARGET2")
                 closed_trades.append(closed)
@@ -236,11 +259,12 @@ class VirtualPortfolio:
 
         if pos.direction == "BUY":
             gross_pnl = (exit_price - pos.entry_price) * pos.quantity
+            proceeds = pos.quantity * exit_price - brokerage
         else:
             gross_pnl = (pos.entry_price - exit_price) * pos.quantity
+            proceeds = (2 * pos.entry_price - exit_price) * pos.quantity - brokerage
 
         net_pnl = gross_pnl - brokerage
-        proceeds = pos.quantity * exit_price - brokerage
 
         self.balance += proceeds
         self.total_pnl += net_pnl
@@ -285,11 +309,13 @@ class VirtualPortfolio:
 
         if pos.direction == "BUY":
             gross_pnl = (exit_price - pos.entry_price) * qty
+            proceeds = qty * exit_price - brokerage
         else:
             gross_pnl = (pos.entry_price - exit_price) * qty
+            proceeds = (2 * pos.entry_price - exit_price) * qty - brokerage
 
         net_pnl = gross_pnl - brokerage
-        self.balance += qty * exit_price - brokerage
+        self.balance += proceeds
         self.total_pnl += net_pnl
 
         logger.info("📊 PARTIAL EXIT: {} {} ({:.0f}%) @ ₹{:.2f} | PnL: ₹{:.2f}",
@@ -365,7 +391,24 @@ class VirtualPortfolio:
         try:
             with db_session() as db:
                 portfolio = db.query(Portfolio).filter_by(id=self.portfolio_id).first()
-                if portfolio:
+                if not portfolio:
+                    # Seed/create the default portfolio in the database to prevent foreign key errors
+                    portfolio = Portfolio(
+                        id=self.portfolio_id,
+                        name="Virtual Portfolio",
+                        initial_balance=self.initial_balance,
+                        current_balance=self.balance,
+                        total_pnl=self.total_pnl,
+                        total_trades=self.trade_count,
+                        winning_trades=self.win_count,
+                        losing_trades=self.loss_count,
+                        win_rate=0.0,
+                        peak_balance=self.peak_balance
+                    )
+                    db.add(portfolio)
+                    db.commit()
+                    logger.info("Seeded default virtual portfolio (ID: {}) in database", self.portfolio_id)
+                else:
                     self.balance = portfolio.current_balance
                     self.initial_balance = portfolio.initial_balance
                     self.peak_balance = portfolio.peak_balance
@@ -373,10 +416,37 @@ class VirtualPortfolio:
                     self.trade_count = portfolio.total_trades
                     self.win_count = portfolio.winning_trades
                     self.loss_count = portfolio.losing_trades
+
+                # Load existing open trades from database into memory
+                open_trades = db.query(Trade).filter_by(portfolio_id=self.portfolio_id, status="OPEN").all()
+                self.open_positions = {}
+                for t in open_trades:
+                    pos = OpenPosition(
+                        order_id=str(t.id),
+                        ticker=t.ticker,
+                        symbol=t.symbol,
+                        direction=t.direction,
+                        quantity=t.quantity,
+                        entry_price=t.entry_price,
+                        current_price=t.entry_price,
+                        stop_loss=t.stop_loss,
+                        target1=t.target1,
+                        target2=t.target2,
+                        target3=t.target3,
+                        strategy_name=t.strategy_used,
+                        confidence=t.confidence_at_entry or 0.5,
+                        entry_time=t.entry_time or datetime.utcnow(),
+                        timeframe=t.timeframe or "1d",
+                        exchange=t.exchange or "NSE",
+                        ai_reason=t.ai_reason or "",
+                        indicator_snapshot=t.indicator_snapshot,
+                    )
+                    self.open_positions[pos.order_id] = pos
+                logger.info("Loaded {} open positions from database into memory", len(self.open_positions))
         except Exception as e:
             logger.debug("Portfolio DB load: {}", e)
 
-    def _save_trade_open(self, pos, fill_price, quantity, order) -> None:
+    def _save_trade_open(self, pos, fill_price, quantity, order) -> Optional[int]:
         try:
             with db_session() as db:
                 coins_used = fill_price * quantity + settings.VIRTUAL_BROKERAGE_PER_TRADE
@@ -399,19 +469,32 @@ class VirtualPortfolio:
                     exchange=getattr(pos, "exchange", "NSE"),
                     coins_used=round(coins_used, 2),
                     coins_remaining=round(self.balance, 2),
-                    ai_reason=getattr(pos, "ai_reason", "")
+                    ai_reason=getattr(pos, "ai_reason", ""),
+                    indicator_snapshot=getattr(pos, "indicator_snapshot", None),
                 )
                 db.add(trade)
-                db.flush()
+                db.commit()
+                return trade.id
         except Exception as e:
-            logger.debug("Save trade open error: {}", e)
+            logger.error("Save trade open error: {}", e)
+            return None
 
     def _save_trade_close(self, pos, exit_price, net_pnl, gross_pnl, reason) -> None:
         try:
             with db_session() as db:
-                trade = db.query(Trade).filter_by(
-                    ticker=pos.ticker, status="OPEN"
-                ).order_by(Trade.entry_time.desc()).first()
+                trade = None
+                try:
+                    # Query trade by database primary key ID directly
+                    trade_id = int(pos.order_id)
+                    trade = db.query(Trade).filter_by(id=trade_id).first()
+                except (ValueError, TypeError):
+                    pass
+
+                if not trade:
+                    trade = db.query(Trade).filter_by(
+                        ticker=pos.ticker, status="OPEN"
+                    ).order_by(Trade.entry_time.desc()).first()
+
                 if trade:
                     trade.status = "CLOSED"
                     trade.exit_price = exit_price

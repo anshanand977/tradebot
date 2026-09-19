@@ -33,6 +33,7 @@ from app.core.scanner.market_scanner import market_scanner
 from app.ai.ollama_client import ollama_client
 from app.ai.self_learning import self_learning
 from app.core.risk.risk_manager import risk_manager
+from app.ai.news_sentiment import news_sentiment_analyst
 
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -54,6 +55,31 @@ async def lifespan(app: FastAPI):
     logger.info("📁 File logging configured at: {}", log_file)
     logger.info("🚀 Starting AI Trading Analyst v{}", settings.APP_VERSION)
     init_db()
+
+    def load_db_settings():
+        try:
+            with db_session() as db:
+                db_settings = db.query(AppSetting).all()
+                for s in db_settings:
+                    val = s.value
+                    if s.value_type == "int":
+                        val = int(val)
+                    elif s.value_type == "float":
+                        val = float(val)
+                    elif s.value_type == "bool":
+                        val = val.lower() == "true"
+                    
+                    if s.key == "initial_balance":
+                        settings.VIRTUAL_INITIAL_BALANCE = val
+                    elif s.key == "risk_per_trade_pct":
+                        settings.DEFAULT_RISK_PER_TRADE_PCT = val
+                    elif s.key == "min_strategy_agreement":
+                        settings.MIN_STRATEGY_AGREEMENT = val
+                logger.info("Loaded custom settings from database")
+        except Exception as e:
+            logger.debug("Failed to load settings from DB: {}", e)
+
+    load_db_settings()
     historical_data.sync_symbols_to_db()
     logger.info("✅ Database initialized")
 
@@ -392,26 +418,67 @@ async def get_positions():
     return {"positions": virtual_portfolio.get_open_positions()}
 
 
+@app.get("/api/portfolio/pending-zone-orders")
+async def get_pending_zone_orders():
+    from app.core.simulation.auto_trader import auto_trader
+    return {"pending_zone_orders": auto_trader.pending_zone_orders}
+
+
 @app.post("/api/portfolio/order")
 async def place_order(req: OrderRequest):
-    """Place a simulated order."""
+    """Place a simulated order at the CURRENT LIVE market price, not the stale alert price."""
+    full_ticker = req.ticker if "." in req.ticker else f"{req.ticker}.NS"
+    symbol = full_ticker.replace(".NS", "").replace(".BO", "")
+
+    # ── Step 1: Fetch live market price ───────────────────────────────────────
+    live_price = historical_data.get_live_price(full_ticker)
+    alert_price = req.entry_price  # Price when the signal was generated
+
+    if live_price and live_price > 0:
+        execution_price = live_price
+        price_note = f"Filled at live price ₹{live_price:.2f} (alert was ₹{alert_price:.2f})"
+        logger.info("🎯 Order execution: {} live=₹{:.2f} alert=₹{:.2f}", full_ticker, live_price, alert_price)
+    else:
+        execution_price = alert_price
+        price_note = f"Filled at alert price ₹{alert_price:.2f} (live price unavailable)"
+        logger.warning("⚠️ Falling back to alert price for {}: ₹{:.2f}", full_ticker, alert_price)
+
+    # ── Step 2: Re-scale stop loss and targets proportionally ─────────────────
+    # Preserve the original R:R ratio when the fill price differs from the alert price
+    if alert_price and alert_price > 0 and execution_price != alert_price:
+        scale = execution_price / alert_price
+        if req.direction == "BUY":
+            sl   = execution_price - abs(execution_price - req.stop_loss  * scale)
+            t1   = execution_price + abs(req.target1 * scale - execution_price)
+            t2   = execution_price + abs(req.target2 * scale - execution_price)
+            t3   = execution_price + abs(req.target3 * scale - execution_price)
+        else:  # SELL
+            sl   = execution_price + abs(req.stop_loss  * scale - execution_price)
+            t1   = execution_price - abs(execution_price - req.target1 * scale)
+            t2   = execution_price - abs(execution_price - req.target2 * scale)
+            t3   = execution_price - abs(execution_price - req.target3 * scale)
+    else:
+        sl, t1, t2, t3 = req.stop_loss, req.target1, req.target2, req.target3
+
+    # ── Step 3: Build and place order ─────────────────────────────────────────
     order = SimulatedOrder(
         order_id=str(uuid.uuid4()),
-        ticker=req.ticker if "." in req.ticker else f"{req.ticker}.NS",
-        symbol=req.ticker.replace(".NS", ""),
+        ticker=full_ticker,
+        symbol=symbol,
         direction=req.direction,
-        quantity=0,  # Will be calculated by risk manager
-        entry_price=req.entry_price,
-        stop_loss=req.stop_loss,
-        target1=req.target1,
-        target2=req.target2,
-        target3=req.target3,
+        quantity=0,  # Will be set by risk manager below
+        entry_price=execution_price,
+        stop_loss=round(sl, 2),
+        target1=round(t1, 2),
+        target2=round(t2, 2),
+        target3=round(t3, 2),
         strategy_name=req.strategy_name,
         confidence=req.confidence,
         timeframe=req.timeframe,
         exchange=req.exchange,
-        ai_reason=req.ai_reason or "",
+        ai_reason=(req.ai_reason or "") + f" | {price_note}",
     )
+
     # Calculate quantity from risk manager
     risk = risk_manager.check_trade(
         ticker=order.ticker,
@@ -783,6 +850,32 @@ async def get_best_strategies():
     return {"best": self_learning.get_best_strategies()}
 
 
+# ─── News Sentiment ───────────────────────────────────────────────────────────
+
+@app.get("/api/news/trends")
+async def get_news_trends(limit: int = Query(8)):
+    """Fetch and analyze general market news trends."""
+    articles = news_sentiment_analyst.fetch_market_trends_news(limit=limit)
+    analysis = news_sentiment_analyst.analyze_sentiment(articles)
+    return {
+        "articles": articles,
+        "sentiment": analysis
+    }
+
+
+@app.get("/api/news/{ticker}")
+async def get_ticker_news(ticker: str, limit: int = Query(20)):
+    """Fetch and analyze news sentiment for a specific stock ticker."""
+    resolved_ticker = nse_client.get_ticker(ticker)
+    articles = news_sentiment_analyst.fetch_ticker_news(resolved_ticker, limit=limit)
+    analysis = news_sentiment_analyst.analyze_sentiment(articles, ticker=resolved_ticker)
+    return {
+        "ticker": resolved_ticker,
+        "articles": articles,
+        "sentiment": analysis
+    }
+
+
 # ─── Data Management ──────────────────────────────────────────────────────────
 
 @app.post("/api/data/download")
@@ -829,6 +922,56 @@ async def get_settings():
     }
 
 
+class SaveSettingsRequest(BaseModel):
+    initial_balance: float
+    risk_per_trade_pct: float
+    min_strategy_agreement: int
+
+@app.post("/api/settings")
+async def save_settings(req: SaveSettingsRequest):
+    try:
+        with db_session() as db:
+            for key, val, val_type in [
+                ("initial_balance", str(req.initial_balance), "float"),
+                ("risk_per_trade_pct", str(req.risk_per_trade_pct), "float"),
+                ("min_strategy_agreement", str(req.min_strategy_agreement), "int"),
+            ]:
+                item = db.query(AppSetting).filter_by(key=key).first()
+                if not item:
+                    item = AppSetting(key=key, value=val, value_type=val_type)
+                    db.add(item)
+                else:
+                    item.value = val
+            db.commit()
+        
+        # Apply in memory to settings
+        settings.VIRTUAL_INITIAL_BALANCE = req.initial_balance
+        settings.DEFAULT_RISK_PER_TRADE_PCT = req.risk_per_trade_pct
+        settings.MIN_STRATEGY_AGREEMENT = req.min_strategy_agreement
+        
+        # Sync virtual portfolio initial balance
+        virtual_portfolio.initial_balance = req.initial_balance
+        
+        logger.info("Saved settings: balance={}, risk={}, agreement={}", 
+                    req.initial_balance, req.risk_per_trade_pct, req.min_strategy_agreement)
+        
+        return {"status": "SUCCESS", "message": "Settings saved successfully"}
+    except Exception as e:
+        logger.error("Save settings error: {}", e)
+        raise HTTPException(500, f"Failed to save settings: {e}")
+
+
+@app.post("/api/risk/reset-day")
+async def reset_trading_day():
+    try:
+        from app.core.risk.risk_manager import risk_manager
+        risk_manager.reset_daily_counters()
+        return {"status": "SUCCESS", "message": "Trading day refreshed successfully"}
+    except Exception as e:
+        logger.error("Reset trading day error: {}", e)
+        raise HTTPException(500, f"Failed to reset trading day: {e}")
+
+
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/scanner")
@@ -855,10 +998,12 @@ async def portfolio_websocket(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
         while True:
+            from app.core.simulation.auto_trader import auto_trader
             await websocket.send_json({
                 "type": "portfolio_update",
                 "stats": virtual_portfolio.get_stats(),
                 "positions": virtual_portfolio.get_open_positions(),
+                "pending_zone_orders": auto_trader.pending_zone_orders,
             })
             await asyncio.sleep(5)
     except WebSocketDisconnect:
